@@ -32,8 +32,11 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Cache vcpkg tree
-        uses: actions/cache@v4
+      # restore / save split so the vcpkg tree is kept even when the wheel step
+      # fails: the ports that did build are not rebuilt on the next run
+      - name: Restore vcpkg tree
+        id: vcpkg-cache
+        uses: actions/cache/restore@v4
         with:
           path: ~/.ezvcpkg
           key: ezvcpkg-${{ runner.os }}-${{ hashFiles('extern/cesium-native/vcpkg.json', 'extern/cesium-native/cmake/ezvcpkg/**') }}
@@ -52,7 +55,7 @@ jobs:
           # Linux: vcpkg needs these to bootstrap and build its ports
           CIBW_MANYLINUX_X86_64_IMAGE: manylinux_2_28
           CIBW_BEFORE_ALL_LINUX: >
-            dnf install -y curl zip unzip tar nasm ninja-build perl-IPC-Cmd
+            dnf install -y curl zip unzip tar nasm ninja-build perl-core
             autoconf automake libtool pkgconfig
           CIBW_ENVIRONMENT_LINUX: >
             EZVCPKG_BASEDIR=/host/home/runner/.ezvcpkg
@@ -65,6 +68,13 @@ jobs:
           # the extension links everything statically: no wheel repair needed
           CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: ""
           CIBW_TEST_COMMAND: python -c "import cesium; from cesium.tiles import content; content.register_all_tile_content_types(); print('cesium ok')"
+
+      - name: Save vcpkg tree
+        if: always() && steps.vcpkg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.ezvcpkg
+          key: ${{ steps.vcpkg-cache.outputs.cache-primary-key }}
 
       - uses: actions/upload-artifact@v4
         with:
