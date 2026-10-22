@@ -11,6 +11,10 @@ name: wheels
 
 on:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Attach the wheels to this GitHub Release (created if missing); empty = artifacts only"
+        default: ""
   push:
     tags: ["v*"]
 
@@ -38,7 +42,9 @@ jobs:
         id: vcpkg-cache
         uses: actions/cache/restore@v4
         with:
-          path: ~/.ezvcpkg
+          # only the installed prefix (~1.2 GB per OS): build trees and
+          # downloads are not needed to reuse the ports
+          path: ~/.ezvcpkg/*/installed
           key: ezvcpkg-${{ runner.os }}-${{ hashFiles('extern/cesium-native/vcpkg.json', 'extern/cesium-native/cmake/ezvcpkg/**') }}
           restore-keys: ezvcpkg-${{ runner.os }}-
 
@@ -73,13 +79,34 @@ jobs:
         if: always() && steps.vcpkg-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
-          path: ~/.ezvcpkg
+          path: ~/.ezvcpkg/*/installed
           key: ${{ steps.vcpkg-cache.outputs.cache-primary-key }}
 
       - uses: actions/upload-artifact@v4
         with:
           name: wheels-${{ matrix.os }}
           path: wheelhouse/*.whl
+
+  release:
+    # GitHub Release assets: on a v* tag, or on a manual run with release_tag.
+    # Downstream installers (e.g. the Blender add-on) fetch wheels from here.
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.release_tag != ''
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-*
+          merge-multiple: true
+          path: dist
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.release_tag || github.ref_name }}
+        run: |
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 ||             gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TAG" --notes "cesium-native-python wheels (CPython 3.11-3.13; Linux x86_64, Windows x64, macOS arm64)"
+          gh release upload "$TAG" dist/*.whl --repo "$GITHUB_REPOSITORY" --clobber
 
   publish:
     # PyPI trusted publishing: register this repository + workflow under the
