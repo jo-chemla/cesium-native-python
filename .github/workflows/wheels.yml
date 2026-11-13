@@ -14,7 +14,7 @@ on:
     inputs:
       os:
         description: "Runners to build on (JSON list)"
-        default: '["ubuntu-24.04", "windows-2022", "macos-14"]'
+        default: '["ubuntu-24.04", "windows-2022", "macos-15"]'
       release_tag:
         description: "Attach the wheels to this GitHub Release (created if missing); empty = artifacts only"
         default: ""
@@ -31,7 +31,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON(inputs.os || '["ubuntu-24.04", "windows-2022", "macos-14"]') }}
+        os: ${{ fromJSON(inputs.os || '["ubuntu-24.04", "windows-2022", "macos-15"]') }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -80,7 +80,8 @@ jobs:
           CIBW_ENVIRONMENT_LINUX: >
             EZVCPKG_BASEDIR=/host/home/runner/.ezvcpkg
             CMAKE_BUILD_PARALLEL_LEVEL=4 VCPKG_MAX_CONCURRENCY=4
-          # macOS: Homebrew tools for the same ports; arm64 only on macos-14
+          # macOS: Homebrew tools for the same ports; macos-14 and later are arm64
+          # (GitHub retired the macos-14 runner in November 2026)
           CIBW_BEFORE_ALL_MACOS: brew install nasm ninja autoconf automake libtool pkg-config
           CIBW_ENVIRONMENT_MACOS: >
             MACOSX_DEPLOYMENT_TARGET=12.0
@@ -108,7 +109,18 @@ jobs:
   release:
     # GitHub Release assets: on a v* tag, or on a manual run with release_tag.
     # Downstream installers (e.g. the Blender add-on) fetch wheels from here.
-    if: startsWith(github.ref, 'refs/tags/v') || inputs.release_tag != ''
+    #
+    # Runs as soon as the build matrix is over, even when a runner failed
+    # (macOS runners are regularly lost to capacity), and attaches the wheels
+    # that did build. The release notes say which runners are still missing
+    # and the release stays a pre-release until the set is complete, so
+    # "latest" keeps pointing at the previous complete release meanwhile.
+    # "Re-run failed jobs" on the run re-runs this job too: it then adds the
+    # new wheels and updates the notes (artifacts of earlier attempts stay
+    # available to the re-run). always(): a runner that never starts (label
+    # retired, no capacity) keeps the run queued for hours, and the only way
+    # out is to cancel the run; the wheels that did build are released anyway.
+    if: ${{ always() && (startsWith(github.ref, 'refs/tags/v') || inputs.release_tag != '') }}
     needs: build
     runs-on: ubuntu-latest
     concurrency:
@@ -119,23 +131,56 @@ jobs:
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
+          # one directory per runner that produced wheels (art/wheels-<os>/)
           pattern: wheels-*
-          merge-multiple: true
-          path: dist
+          path: art
       - env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.release_tag || github.ref_name }}
+          EXPECTED: ${{ inputs.os || '["ubuntu-24.04", "windows-2022", "macos-15"]' }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
+          set -eu
+          mkdir -p dist
+          built=""
+          for d in art/wheels-*/; do
+            [ -d "$d" ] || continue
+            cp "$d"*.whl dist/
+            built="$built ${d#art/wheels-}"
+          done
+          # one runner name per line, both lists sorted the same way for comm
+          for b in $built; do echo "${b%/}"; done | sort > built.txt
+          echo "$EXPECTED" | jq -r '.[]' | tr -d '\r' | sort > expected.txt
+          built=$(cat built.txt)
+          pending=$(comm -23 expected.txt built.txt)
+          n=$(ls dist/*.whl 2>/dev/null | wc -l)
+          [ "$n" -gt 0 ] || { echo "no runner produced a wheel, nothing to release"; exit 1; }
+
+          {
+            echo "cesium-native-python wheels (CPython 3.11-3.13; Linux x86_64, Windows x64, macOS arm64),"
+            echo "built from $GITHUB_SHA by [this run]($RUN_URL)."
+            echo
+            if [ -z "$pending" ]; then
+              echo "All $n wheels attached ($(echo $built | tr ' ' ',' | sed 's/,/, /g'))."
+            else
+              echo "**Incomplete:** $n wheels attached so far ($(echo $built | sed 's/ /, /g'))."
+              echo "Still missing: $(echo $pending | sed 's/ /, /g'). Re-run the failed jobs of the run above;"
+              echo "this release is updated, and leaves pre-release, when they land."
+            fi
+          } > notes.md
+
           # the tag is created at the commit that was built, not at the default branch
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
             gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "$TAG" \
-              --notes "cesium-native-python wheels (CPython 3.11-3.13; Linux x86_64, Windows x64, macOS arm64)" || \
+              --prerelease --notes-file notes.md || \
             gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null   # created concurrently
-          # one complete set per release: drop the previous wheels, then upload all
-          for a in $(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets -q '.assets[].name' | grep '[.]whl$' || true); do
-            gh release delete-asset "$TAG" "$a" --repo "$GITHUB_REPOSITORY" --yes
-          done
-          gh release upload "$TAG" dist/*.whl --repo "$GITHUB_REPOSITORY"
+          # wheels with the same file name are replaced, the other runners' wheels stay
+          gh release upload "$TAG" dist/*.whl --repo "$GITHUB_REPOSITORY" --clobber
+          if [ -z "$pending" ]; then
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file notes.md --prerelease=false --latest
+          else
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file notes.md --prerelease
+          fi
 
   publish:
     # PyPI trusted publishing: register this repository + workflow under the
