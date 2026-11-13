@@ -1,4 +1,5 @@
 #include "FutureTemplates.h"
+#include "GilSafeCallable.h"
 #include "JsonConversions.h"
 #include "NumpyConversions.h"
 
@@ -1453,7 +1454,8 @@ void initTiles3dSelectionBindings(py::module& m) {
                       const CesiumAsync::AsyncSystem& asyncSystem,
                       py::function tokenRefreshCallback) {
             auto cb = [asyncSystem,
-                       pyCallback = std::move(tokenRefreshCallback)](
+                       pyCallback =
+                           GilSafeCallable(std::move(tokenRefreshCallback))](
                           const std::string& previousToken)
                 -> CesiumAsync::Future<CesiumUtility::Result<std::string>> {
               py::gil_scoped_acquire gil;
@@ -2407,7 +2409,14 @@ void initTiles3dSelectionBindings(py::module& m) {
           }),
           py::arg("view_matrix"),
           py::arg("projection_matrix"),
-          py::arg("viewport_size"))
+          py::arg("viewport_size"),
+          "Build the view from a 4x4 view matrix and a 4x4 projection matrix.\n\n"
+          "cesium-native expects the projection with its Y axis flipped (the "
+          "top of the screen at NDC y = -1) and the screen-space error code "
+          "relies on it: negate the second row of an OpenGL-style projection "
+          "matrix before passing it, otherwise the screen-space error comes "
+          "out negative and no tile refines. Matrices follow the convention "
+          "documented for ``Tile.transform``.")
       .def(
           py::init([](const py::object& position,
                       const py::object& direction,

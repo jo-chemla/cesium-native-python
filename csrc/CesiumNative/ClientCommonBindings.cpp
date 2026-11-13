@@ -1,4 +1,5 @@
 #include "FutureTemplates.h"
+#include "GilSafeCallable.h"
 #include "ResponseTemplates.h"
 
 #include <CesiumAsync/AsyncSystem.h>
@@ -142,7 +143,8 @@ void initClientCommonBindings(py::module& m) {
                 friendlyAppName,
                 clientOptions,
                 scopes,
-                [cb = std::move(openUrlCallback)](const std::string& url) {
+                [cb = GilSafeCallable(std::move(openUrlCallback))](
+                    const std::string& url) {
                   py::gil_scoped_acquire gil;
                   cb(url);
                 },

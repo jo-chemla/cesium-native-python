@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Generator
-from typing import Any, Callable, Generic, TypeVar
+from typing import Any, Callable, Generic, TypeVar, overload
 
 import numpy as np
 import numpy.typing as npt
@@ -137,12 +137,25 @@ class IAssetAccessor:
     def tick(self) -> None: ...
 
 class CachingAssetAccessor(IAssetAccessor):
-    """An ``IAssetAccessor`` backed by an on-disk HTTP cache."""
+    """An ``IAssetAccessor`` backed by an on-disk HTTP cache.
 
+    Pass a ``cache_directory`` (file path of a new ``SqliteCache`` holding at
+    most 4096 items) or an existing ``ICacheDatabase`` such as
+    ``SqliteCache(path, max_items)``.
+    """
+
+    @overload
     def __init__(
         self,
         asset_accessor: IAssetAccessor,
         cache_directory: str,
+        requests_per_cache_prune: int = 10000,
+    ) -> None: ...
+    @overload
+    def __init__(
+        self,
+        asset_accessor: IAssetAccessor,
+        cache: ICacheDatabase,
         requests_per_cache_prune: int = 10000,
     ) -> None: ...
 

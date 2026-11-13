@@ -121,21 +121,25 @@ class IPrepareRendererResources:
 class TilesetExternals:
     """External interfaces needed to construct a ``Tileset``.
 
-    Example — replicate what ``TilesetLayer.from_ellipsoid()`` does::
+    Example (``examples/minimal_preparer.py`` is the runnable version)::
 
-        from argus import TaskProcessor, PrepareRendererResources, TilesetLayer
-        from cesium.async_ import AsyncSystem
+        from cesium.async_ import AsyncSystem, NativeTaskProcessor
         from cesium.curl import CurlAssetAccessor
-        from cesium.tiles.selection import TilesetExternals, Tileset
+        from cesium.tiles.selection import (
+            IPrepareRendererResources, Tileset, TilesetExternals)
+        from cesium.utility import CreditSystem
 
-        tp   = TaskProcessor()
-        asys = AsyncSystem(tp)
-        acc  = CurlAssetAccessor()
-        # PrepareRendererResources needs a TilesetLayer for content extraction
-        layer = TilesetLayer(...)
-        prr  = PrepareRendererResources(layer)
-        ext  = TilesetExternals(acc, prr, asys)
-        ts   = Tileset(ext, "https://example.com/tileset.json")
+        class Preparer(IPrepareRendererResources):
+            def prepare_in_load_thread(self, async_system, result, transform):
+                return result.model          # or anything built from it
+            def prepare_in_main_thread(self, tile, load_thread_result):
+                return load_thread_result
+            def free_tile(self, tile, load_thread_result, main_thread_result):
+                pass
+
+        asys = AsyncSystem(NativeTaskProcessor())
+        ext = TilesetExternals(CurlAssetAccessor(), Preparer(), asys, CreditSystem())
+        ts = Tileset(ext, "https://example.com/tileset.json")
     """
     def __init__(
         self,

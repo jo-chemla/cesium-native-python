@@ -1,4 +1,5 @@
 #include "FutureTemplates.h"
+#include "GilSafeCallable.h"
 #include "HttpHeaderConversions.h"
 #include "JsonConversions.h"
 #include "NumpyConversions.h"
@@ -939,9 +940,9 @@ void initAsyncBindings(py::module& m) {
           "run_in_worker_thread",
           [](const CesiumAsync::AsyncSystem& self, py::function callback) {
             return self.runInWorkerThread(
-                [callback = std::move(callback)]() mutable {
+                [cb = GilSafeCallable(std::move(callback))]() {
                   py::gil_scoped_acquire gil;
-                  callback();
+                  cb();
                 });
           },
           py::arg("callback"))
@@ -949,9 +950,9 @@ void initAsyncBindings(py::module& m) {
           "run_in_main_thread",
           [](const CesiumAsync::AsyncSystem& self, py::function callback) {
             return self.runInMainThread(
-                [callback = std::move(callback)]() mutable {
+                [cb = GilSafeCallable(std::move(callback))]() {
                   py::gil_scoped_acquire gil;
-                  callback();
+                  cb();
                 });
           },
           py::arg("callback"))
@@ -962,9 +963,9 @@ void initAsyncBindings(py::module& m) {
              py::function callback) {
             return self.runInThreadPool(
                 threadPool,
-                [callback = std::move(callback)]() mutable {
+                [cb = GilSafeCallable(std::move(callback))]() {
                   py::gil_scoped_acquire gil;
-                  callback();
+                  cb();
                 });
           },
           py::arg("thread_pool"),
@@ -1126,7 +1127,26 @@ void initAsyncBindings(py::module& m) {
               }),
           py::arg("asset_accessor"),
           py::arg("cache_directory"),
-          py::arg("requests_per_cache_prune") = 10000);
+          py::arg("requests_per_cache_prune") = 10000,
+          "Cache responses of ``asset_accessor`` in a new ``SqliteCache`` at "
+          "``cache_directory`` (a file path) holding at most 4096 items.")
+      .def(
+          py::init(
+              [](const std::shared_ptr<CesiumAsync::IAssetAccessor>& pInner,
+                 const std::shared_ptr<CesiumAsync::ICacheDatabase>& pCache,
+                 int32_t requestsPerCachePrune) {
+                return std::make_shared<CesiumAsync::CachingAssetAccessor>(
+                    spdlog::default_logger(),
+                    pInner,
+                    pCache,
+                    requestsPerCachePrune);
+              }),
+          py::arg("asset_accessor"),
+          py::arg("cache"),
+          py::arg("requests_per_cache_prune") = 10000,
+          "Cache responses of ``asset_accessor`` in an existing cache "
+          "database, e.g. ``SqliteCache(path, max_items)`` to choose the "
+          "item limit, or one cache shared by several accessors.");
 
   py::class_<
       CesiumAsync::GunzipAssetAccessor,

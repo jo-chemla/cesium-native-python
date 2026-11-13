@@ -38,7 +38,7 @@ On Windows the build system uses the Visual Studio x64 generator automatically.
 ## Building from source
 
 ```bash
-git clone --recurse-submodules https://github.com/calebbuffa/cesium-python.git
+git clone --recurse-submodules https://github.com/calebbuffa/cesium-native-python.git
 cd cesium-python
 pip install .
 ```
@@ -50,6 +50,16 @@ If you already have the repo cloned without submodules:
 ```bash
 git submodule update --init --recursive
 ```
+
+## HTTPS on Linux
+
+The Linux wheels carry their own libcurl, whose compiled-in CA bundle path is
+Red Hat's `/etc/pki/tls/certs/ca-bundle.crt`. `CurlAssetAccessor` therefore
+looks for a bundle itself when `CurlAssetAccessorOptions.certificate_file` is
+left empty: `CURL_CA_BUNDLE` or `SSL_CERT_FILE` if set, else the first existing
+system bundle (Red Hat, Debian/Ubuntu/Arch, SUSE, Alpine paths). Set
+`certificate_file` explicitly to use another bundle, for example
+`certifi.where()`.
 
 ## Quick start
 

@@ -5,14 +5,13 @@ accessor_to_numpy normalization, for_each_primitive_in_scene transform,
 ImageAsset.pixels, write_glb multi-buffer error, content types registered."""
 import json
 import struct
-import sys
 
 import numpy as np
-
-import cesium
-from cesium.gltf import AccessorView, Model, ImageAsset, accessor_to_numpy
+import pytest
+from cesium.gltf import AccessorView, Buffer, ImageAsset, accessor_to_numpy
 from cesium.gltf.reader import GltfReader
 from cesium.gltf.writer import GltfWriter
+from cesium.tiles import content
 
 
 def tiny_glb():
@@ -44,56 +43,54 @@ def tiny_glb():
             + struct.pack("<I4s", len(bin_), b"BIN\0") + bin_)
 
 
-res = GltfReader().read_gltf(tiny_glb())
-assert res.model is not None, res.errors
-model = res.model
+@pytest.fixture
+def model():
+    res = GltfReader().read_gltf(tiny_glb())
+    assert res.model is not None, res.errors
+    return res.model
 
-# C2: u8 vector view + normalized decoding
-v = AccessorView(model, 1)
-a = np.asarray(v)
-assert a.dtype == np.uint8 and a.shape == (3, 3) and a[1, 1] == 255, (a.dtype, a.shape)
-f = accessor_to_numpy(model, 1)
-assert f.dtype == np.float32 and abs(float(f[0, 0]) - 1.0) < 1e-6 and f[0, 1] == 0.0, f
-p = accessor_to_numpy(model, 0)
-assert p.dtype == np.float32 and p.shape == (3, 3)
-print("C2 ok:", type(v).__name__, a.tolist()[0], f.tolist()[0])
 
-# C3: transform arrives as a (4, 4) float64 array, translation in arr[3][:3]
-seen = []
-model.for_each_primitive_in_scene(0, lambda m, n, me, pr, t: seen.append(t))
-assert len(seen) == 1, seen
-t = seen[0]
-assert isinstance(t, np.ndarray) and t.shape == (4, 4) and t.dtype == np.float64, (type(t), getattr(t, "shape", None))
-assert np.allclose(t[3][:3], [10, 20, 30]), t
-print("C3 ok: translation", t[3][:3].tolist())
+def test_u8_vector_view_and_normalized_decoding(model):
+    v = AccessorView(model, 1)
+    a = np.asarray(v)
+    assert a.dtype == np.uint8 and a.shape == (3, 3) and a[1, 1] == 255, (a.dtype, a.shape)
+    f = accessor_to_numpy(model, 1)
+    assert f.dtype == np.float32 and abs(float(f[0, 0]) - 1.0) < 1e-6 and f[0, 1] == 0.0, f
+    p = accessor_to_numpy(model, 0)
+    assert p.dtype == np.float32 and p.shape == (3, 3)
 
-# C8: ImageAsset.pixels
-img = ImageAsset()
-img.width, img.height, img.channels, img.bytes_per_channel = 4, 2, 3, 1
-img.pixel_data = np.arange(24, dtype=np.uint8)
-px = img.pixels
-assert px.shape == (2, 4, 3) and px.dtype == np.uint8 and int(px[1, 3, 2]) == 23, (px.shape, px.dtype)
-print("C8 ok:", px.shape, px.dtype)
 
-# C9: write_glb refuses a model with two buffers
-from cesium.gltf import Buffer  # noqa: E402
-bufs = model.buffers          # pybind11 hands out a copy of the list
-bufs.append(Buffer())
-model.buffers = bufs
-assert len(model.buffers) == 2
-try:
-    GltfWriter().write_glb(model, b"")
-    raise SystemExit("C9 FAILED: no error for a 2-buffer model")
-except ValueError as e:
-    assert "collapse_to_single_buffer" in str(e), e
-    print("C9 ok:", str(e)[:60])
+def test_primitive_transform_is_a_4x4_float64_array(model):
+    # translation lands in arr[3][:3] (column-major glm matrix seen row by row)
+    seen = []
+    model.for_each_primitive_in_scene(0, lambda m, n, me, pr, t: seen.append(t))
+    assert len(seen) == 1, seen
+    t = seen[0]
+    assert isinstance(t, np.ndarray) and t.shape == (4, 4) and t.dtype == np.float64, (type(t), getattr(t, "shape", None))
+    assert np.allclose(t[3][:3], [10, 20, 30]), t
 
-# C1: content types registered at import: the converters resolve without an
-# explicit register_all_tile_content_types() call (cesium-native registers
-# b3dm / pnts / i3dm / cmpt by magic and glTF / GLB by extension and magic)
-from cesium.tiles import content  # noqa: E402
-assert content.GltfConverters.converter_by_magic(b"b3dm" + bytes(24)) == "b3dm"
-assert content.GltfConverters.converter_by_magic(b"glTF" + bytes(24)) == "binary"
-assert content.GltfConverters.converter_by_file_extension("tile.glb") == "binary"
-print("C1 ok: converters registered at import")
-print("ALL OK", cesium.__file__)
+
+def test_image_asset_pixels():
+    img = ImageAsset()
+    img.width, img.height, img.channels, img.bytes_per_channel = 4, 2, 3, 1
+    img.pixel_data = np.arange(24, dtype=np.uint8)
+    px = img.pixels
+    assert px.shape == (2, 4, 3) and px.dtype == np.uint8 and int(px[1, 3, 2]) == 23, (px.shape, px.dtype)
+
+
+def test_write_glb_refuses_two_buffers(model):
+    bufs = model.buffers          # pybind11 hands out a copy of the list
+    bufs.append(Buffer())
+    model.buffers = bufs
+    assert len(model.buffers) == 2
+    with pytest.raises(ValueError, match="collapse_to_single_buffer"):
+        GltfWriter().write_glb(model, b"")
+
+
+def test_content_types_registered_at_import():
+    # the converters resolve without an explicit register_all_tile_content_types()
+    # call (cesium-native registers b3dm / pnts / i3dm / cmpt by magic and
+    # glTF / GLB by extension and magic)
+    assert content.GltfConverters.converter_by_magic(b"b3dm" + bytes(24)) == "b3dm"
+    assert content.GltfConverters.converter_by_magic(b"glTF" + bytes(24)) == "binary"
+    assert content.GltfConverters.converter_by_file_extension("tile.glb") == "binary"
